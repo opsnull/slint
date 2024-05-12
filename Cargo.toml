@@ -26,8 +26,8 @@ members = [
     'examples/slide_puzzle',
     'examples/todo/rust',
     'examples/virtual_keyboard/rust',
-    'examples/carousel/rust',
-    'examples/energy-monitor',
+    #'examples/carousel/rust',
+    #'examples/energy-monitor',
     'examples/mcu-board-support',
     'examples/uefi-demo',
     'helper_crates/const-field-offset',
@@ -63,6 +63,11 @@ members = [
     'xtask',
 ]
 
+excludes = [
+  'examples/carousel/rust',
+  'examples/energy-monitor',
+]
+
 default-members = [
     'api/rs/build',
     'api/rs/slint',
@@ -73,8 +78,8 @@ default-members = [
     'examples/slide_puzzle',
     'examples/todo/rust',
     'examples/virtual_keyboard/rust',
-    'examples/carousel/rust',
-    'examples/energy-monitor',
+    #'examples/carousel/rust',
+    #'examples/energy-monitor',
     'internal/backends/winit',
     'internal/backends/qt',
     'internal/backends/selector',
@@ -146,6 +151,8 @@ raw-window-handle-06 = { package = "raw-window-handle", version = "0.6", feature
 [profile.release]
 lto = true
 panic = "abort"
+debug =true
 
 [profile.dev]
 panic = "abort"
+

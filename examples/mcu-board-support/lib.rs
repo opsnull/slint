@@ -26,6 +26,7 @@ pub use esp32_s2_kaluga_1::*;
 
 #[cfg(feature = "esp32-s3-box")]
 mod esp32_s3_box;
+pub mod gt911;
 #[cfg(feature = "esp32-s3-box")]
 pub use esp32_s3_box::*;
 

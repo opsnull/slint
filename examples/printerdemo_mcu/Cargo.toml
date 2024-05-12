@@ -28,6 +28,10 @@ slint-build = { path = "../../api/rs/build" }
 [dev-dependencies]
 divan = "0.1.14"
 
+[profile.release]
+opt-level = "s"
+debug = true
+
 [[bench]]
 name = "bench"
 path = "bench.rs"
