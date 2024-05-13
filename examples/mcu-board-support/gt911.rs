@@ -1,8 +1,9 @@
 // 参考：
-// gt911: https://github.com/enelson1001/rust-esp32s3-lvgl-clickme/blob/master/src/gt911.rs
-// tt21100 的驱动实现：https://github.com/jessebraham/tt21100/blob/main/tt21100/src/lib.rs
-// tt21100 的例子：https://github.com/sambenko/esp-box-tt21100-example/blob/main/src/main.rs
+// GT911: https://github.com/enelson1001/rust-esp32s3-lvgl-clickme/blob/master/src/gt911.rs
+// TT21100 的驱动实现：https://github.com/jessebraham/tt21100/blob/main/tt21100/src/lib.rs
+// TT21100 的例子：https://github.com/sambenko/esp-box-tt21100-example/blob/main/src/main.rs
 // GT911 寄存器列表：https://github.com/STMicroelectronics/stm32-gt911/blob/main/gt911_reg.h
+// esp-idf 的 C GT911 驱动：https://github.com/espressif/esp-bsp/blob/master/components/lcd_touch/esp_lcd_touch_gt911/esp_lcd_touch_gt911.c
 
 // 说明：
 // 1. ESP32-S3-BOX-3 的 GT911 I2C 地址是 0x14，而非默认的 0x5d（测试发现）；参考：
@@ -13,7 +14,7 @@
 // 5. 新增 IRQ 引脚和基于 irq 引脚的 data_available() 方法，后续 slint 调用该方法来判断是否有触摸事件；
 
 // 已知问题：
-// 1. 一次触摸后产生多次触摸 event（参考中断日志）导致一些按钮/选择逻辑不对；
+// 1. 一次触摸后产生多次触摸 event（参考串口日志），所以需要在 Slint 等应用层做过滤。
 
 use core::{array::TryFromSliceError, fmt::Debug};
 
@@ -25,7 +26,7 @@ use embedded_hal::{
     digital::v2::InputPin,
 };
 
-// 可能是两个地址：0x5d、0x14，box 开发版是 0x14，如果使用出错则
+// 可能是两个地址：0x5d、0x14，ESP32-S3-BOX-3 开发版是 0x14，如果使用出错则会 panic。
 
 // !! A panic occured in 'examples/mcu-board-support/esp32_s3_box.rs', at line 205, column 33
 
@@ -45,7 +46,7 @@ use embedded_hal::{
 
 // Backtrace:
 
-const DEFAULT_GT911_ADDRESS: u8 = 0x14; // S3-Box-3 使用的是 0x14，而非 0x5d；
+const DEFAULT_GT911_ADDRESS: u8 = 0x14;
 
 /// Any type of error which may occur while interacting with the device
 #[derive(Debug)]
