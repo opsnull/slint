@@ -120,7 +120,7 @@ impl slint::platform::Platform for EspBackend {
         // let mut touch = tt21100::TT21100::new(i2c, io.pins.gpio3.into_pull_up_input())
         //     .expect("Initialize the touch device");
 
-        let mut touch = gt911::GT911::new(i2c, io.pins.gpio3.into_pull_up_input());
+        let mut touch = GT911::new(i2c, io.pins.gpio3.into_pull_up_input());
         //touch.set_orientation(gt911::Orientation::InvertedLandscape);
 
         // 引脚定义参考：https://github.com/espressif/esp-bsp/blob/master/bsp/esp-box-3/include/bsp/esp-box-3.h
@@ -216,39 +216,105 @@ impl slint::platform::Platform for EspBackend {
                 // or we will get outdated event in the next frames. But move events are constantly added to the queue
                 // so we would block the whole interface, so add an arbitrary threshold
 
-                // 问题：一次触摸会出发很多次 
+                // driver: pointInfo: 81, bufferStatus: 1, haveKey: 0 touches: 1
+                //   driver: read_touch_point: x/y/id: 296/133/0
+                // box: Point: TouchPoint { id: 0, x: 296, y: 133, size: 32 }
+                //  box Event: PointerPressed { position: LogicalPosition { x: 296.0, y: 133.0 }, button: Left }
+                // driver: pointInfo: 81, bufferStatus: 1, haveKey: 0 touches: 1
+                //   driver: read_touch_point: x/y/id: 296/133/0
+                // box: Point: TouchPoint { id: 0, x: 296, y: 133, size: 32 }
+                //  box Event: PointerMoved { position: LogicalPosition { x: 296.0, y: 133.0 } }
+                // driver: pointInfo: 81, bufferStatus: 1, haveKey: 0 touches: 1
+                //   driver: read_touch_point: x/y/id: 296/133/0
+                // box: Point: TouchPoint { id: 0, x: 296, y: 133, size: 32 }
+                //  box Event: PointerMoved { position: LogicalPosition { x: 296.0, y: 133.0 } }
+                // driver: pointInfo: 81, bufferStatus: 1, haveKey: 0 touches: 1
+                //   driver: read_touch_point: x/y/id: 296/133/0
+                // box: Point: TouchPoint { id: 0, x: 296, y: 133, size: 32 }
+                //  box Event: PointerMoved { position: LogicalPosition { x: 296.0, y: 133.0 } }
+                // driver: pointInfo: 81, bufferStatus: 1, haveKey: 0 touches: 1
+                //   driver: read_touch_point: x/y/id: 296/133/0
+                // box: Point: TouchPoint { id: 0, x: 296, y: 133, size: 32 }
+                //  box Event: PointerMoved { position: LogicalPosition { x: 296.0, y: 133.0 } }
+                // driver: pointInfo: 80, bufferStatus: 1, haveKey: 0 touches: 0
+                // box: None, last_touch: Some(LogicalPosition { x: 296.0, y: 133.0 })
+                //  box Event: PointerReleased { position: LogicalPosition { x: 296.0, y: 133.0 }, button: Left }
+                // driver: pointInfo: 80, bufferStatus: 1, haveKey: 0 touches: 0
+                // box: None, last_touch: None
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+
+                // driver: pointInfo: 90, bufferStatus: 1, haveKey: 1 touches: 0
+                //   driver: read_touch_key: [31, 0, 0, 0]
+                // box: Key: TouchKey { id: 0, pressed: true }
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 80, bufferStatus: 1, haveKey: 0 touches: 0
+                // box: None, last_touch: None
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+                // driver: pointInfo: 0, bufferStatus: 0, haveKey: 0 touches: 0
+
                 while event_count < 15 && touch.data_available().unwrap() {
                     event_count += 1;
                     let button = slint::platform::PointerEventButton::Left;
-                    let tp = touch.read_touch().unwrap();
-                    if let Some(event) = tp
-                        .map(|record| {
-                            // 修改的地方：这里不能对 record.x 进行反向计算，否则 x 轴翻转。                            
-                            let position = slint::PhysicalPosition::new(
-                                (record.x as f32 * size.width as f32 / 320.) as _,
-                                (record.y as f32 * size.height as f32 / 240.) as _,
-                            )
-                            .to_logical(window.scale_factor());
-                            match last_touch.replace(position) {
-                                Some(_) => WindowEvent::PointerMoved { position },
-                                None => WindowEvent::PointerPressed { position, button },
+                    match touch.read_touch() {
+                        Err(_) => (),
+                        Ok(event) => {
+                            if let Some(event) = match event {
+                                gt911::TouchEvent::Key(key) => {
+                                    esp_println::println!("box: Key: {:?}", key);
+                                    // 不处理触摸按键 key
+                                    None
+                                }
+                                gt911::TouchEvent::None => {
+                                    // 通过返回 None 来表明释放按键。
+                                    esp_println::println!(
+                                        "box: None, last_touch: {:?}",
+                                        last_touch
+                                    );
+                                    // 将 last_touch 置为 None，同时返回 Released 
+                                    last_touch.take().map(|position| WindowEvent::PointerReleased {
+                                        position,
+                                        button,
+                                    })
+                                }
+                                gt911::TouchEvent::Point(point) => {
+                                    esp_println::println!("box: Point: {:?}", point);
+                                    let position = slint::PhysicalPosition::new(
+                                        ((point.x as f32) * size.width as f32 / 320.) as _,
+                                        (point.y as f32 * size.height as f32 / 240.) as _,
+                                    )
+                                    .to_logical(window.scale_factor());
+                                    // 第一次：last_touch 初始为 None，故 replace() 返回 None，对应 Pressed，同时 last_touch 被替换为 position；
+                                    // 第二次和中间几次：last_touch 都是非 None，对应 Moved，同时 last_touch 被替换为新 position；
+                                    // 最后一次：touch.read_touch() 返回 gt911::TouchEvent::None，上面对应的处理分支的 take() 将 last_touch 置为 None，同时返回 Released；
+                                    let event = match last_touch.replace(position) {
+                                        Some(_) => WindowEvent::PointerMoved { position },
+                                        None => WindowEvent::PointerPressed { position, button },
+                                    };
+                                    Some(event)
+                                }
+                            } {
+                                let is_pointer_release_event =
+                                    matches!(event, WindowEvent::PointerReleased { .. });
+
+                                esp_println::println!(" box Event: {:?}", event);
+
+                                window.dispatch_event(event);
+
+                                // removes hover state on widgets
+                                if is_pointer_release_event {
+                                    window.dispatch_event(WindowEvent::PointerExited);
+                                }
                             }
-                        })
-                        .or_else(|| {                            
-                            last_touch
-                                .take()
-                                .map(|position| WindowEvent::PointerReleased { position, button })
-                        })
-                    {
-                        esp_println::println!("event = {:?}", event);
-                        let is_pointer_release_event =
-                            matches!(event, WindowEvent::PointerReleased { .. });
-
-                        window.dispatch_event(event);
-
-                        // removes hover state on widgets
-                        if is_pointer_release_event {
-                            window.dispatch_event(WindowEvent::PointerExited);
                         }
                     }
                 }

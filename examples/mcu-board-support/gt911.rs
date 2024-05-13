@@ -12,7 +12,6 @@
 // 4. 自定义 Error，封装其他类型 Error，便于报错；
 // 5. 新增 IRQ 引脚和基于 irq 引脚的 data_available() 方法，后续 slint 调用该方法来判断是否有触摸事件；
 
-
 // 已知问题：
 // 1. 一次触摸后产生多次触摸 event（参考中断日志）导致一些按钮/选择逻辑不对；
 
@@ -75,8 +74,12 @@ impl<E> From<TryFromSliceError> for Error<E> {
 #[derive(Debug, Clone, Copy)]
 enum Reg {
     ProductId = 0x8140,
+    // 返回 info 数据：触摸点数量、是否有按键、buffer status 是否有效。在 buffer status 有效的情况下，读取触摸点数量和是否有按键
     PointInfo = 0x814E,
+    // 第一个触摸点数据地址
     Point1 = 0x814F,
+    // Touch Key：0：key 被按下，其它：key 被释放，需要 0x814E 中的 Have Key 有效时才读取
+    Key1 = 0x8093,
 }
 
 /// Represents the orientation of the device
@@ -96,6 +99,13 @@ pub struct Dimension {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TouchEvent {
+    Point(TouchPoint),
+    Key(TouchKey),
+    None,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TouchPoint {
     pub id: u8,
     pub x: u16,
@@ -103,12 +113,16 @@ pub struct TouchPoint {
     pub size: u16,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TouchKey {
+    pub id: u8,
+    pub pressed: bool,
+}
+
 /// Driver representation holding:
 ///
 /// - The I2C Slave address of the GT911
 /// - The I2C Bus used to communicate with the GT911
-/// - The reset pin on the GT911
-/// - The delay used by the reset pin to reset the GT911
 /// - The screen/panel orientation
 /// - The scree/panel dimesions
 #[derive(Clone, Debug)]
@@ -159,8 +173,6 @@ where
     }
 
     // no_std 不支持 String 和 std 库。
-    // // Useful function to determine if you are communicating with GT911, The GT911 must first be reset.
-    // // The return string should be - 911
     pub fn read_product_id(&mut self) -> Result<(), Error<E>> {
         let mut rx_buf: [u8; 4] = [0; 4];
 
@@ -170,13 +182,12 @@ where
         let lo_byte: u8 = (product_id_reg & 0xFF).try_into().unwrap();
         let tx_buf: [u8; 2] = [hi_byte, lo_byte];
 
-        esp_println::println!("read_product_id 1: {:?}", &rx_buf);
         self.i2c.write_read(self.address, &tx_buf, &mut rx_buf).map_err(|e| Error::BusError(e))?;
-        esp_println::println!("read_product_id 2: {:?}", &rx_buf);
+        esp_println::println!("driver: read_product_id: {:?}", &rx_buf); // rx_buf 中的字符串应该为 "911"
         Ok(())
     }
 
-    pub fn read_touch(&mut self) -> Result<Option<TouchPoint>, Error<E>> {
+    pub fn read_touch(&mut self) -> Result<TouchEvent, Error<E>> {
         let mut rx_buf: [u8; 1] = [0xFF];
 
         let point_info_reg: u16 = Reg::PointInfo as u16;
@@ -184,34 +195,66 @@ where
         let lo_byte: u8 = (point_info_reg & 0xFF).try_into().unwrap();
         let tx_buf: [u8; 2] = [hi_byte, lo_byte];
 
-        //esp_println::println!("read_touch 1: {:?} {:?} {:?}", self.address, tx_buf, rx_buf);
-
         self.i2c.write_read(self.address, &tx_buf, &mut rx_buf).map_err(|e| Error::BusError(e))?;
 
         let point_info = rx_buf[0];
-        let buffer_status = point_info >> 7 & 1u8;
-        let touches = point_info & 0x7;
+        let buffer_status = point_info & 0x80 == 0x80; // buffer status 表示触摸点数量、按键事件是否有效
+        let have_key = point_info & 0x10 == 0x10; // key 数据有效
+        let touches = point_info & 0xF; // 触摸点数量
 
-        // esp_println::println!("point info = {:x?}", point_info);
-        // esp_println::println!("bufferStatus = {:?}", point_info >> 7 & 1u8);
-        // esp_println::println!("largeDetect = {:?}", point_info >> 6 & 1u8);
-        // esp_println::println!("proximityValid = {:?}", point_info >> 5 & 1u8);
-        // esp_println::println!("HaveKey = {:?}", point_info >> 4 & 1u8);
-        // esp_println::println!("touches = {:?}", point_info & 0xF);
+        esp_println::println!(
+            "driver: pointInfo: {:x?}, bufferStatus: {:?}, haveKey: {:?} touches: {:?}",
+            point_info,
+            point_info >> 7 & 1u8,
+            point_info >> 4 & 1u8,
+            point_info & 0xF
+        );
 
-        let is_touched: bool = buffer_status == 1 && touches > 0;
+        if !buffer_status {
+            // 没有有效的 touch key 或 touch point 数据，清理状态寄存器后返回。
+            let tx_buf: [u8; 3] = [hi_byte, lo_byte, 0u8];
+            self.i2c.write(self.address, &tx_buf).map_err(|e| Error::BusError(e))?;
+            return Err(Error::NoDataAvailable);
+        }
 
-        let mut tp: TouchPoint = TouchPoint { id: 0, x: 0, y: 0, size: 0 };
-
-        if is_touched {
-            tp = self.read_touch_point(Reg::Point1 as u16).map_err(|_| Error::IOError)?;
+        let te: TouchEvent;
+        if touches > 0 {
+            // 有触摸
+            let tp = self.read_touch_point(Reg::Point1 as u16).map_err(|_| Error::IOError)?;
+            te = TouchEvent::Point(tp);
+        } else if have_key {
+            // 有按键
+            let tk = self.read_touch_key(Reg::Key1 as u16).map_err(|_| Error::IOError)?;
+            te = TouchEvent::Key(tk);
+        } else {
+            // 按键或触摸释放（用 TouchEvent::None 表示释放）
+            // Reset point_info register after reading it
+            let tx_buf: [u8; 3] = [hi_byte, lo_byte, 0u8];
+            self.i2c.write(self.address, &tx_buf).map_err(|e| Error::BusError(e))?;
+            return Ok(TouchEvent::None);
         }
 
         // Reset point_info register after reading it
         let tx_buf: [u8; 3] = [hi_byte, lo_byte, 0u8];
         self.i2c.write(self.address, &tx_buf).map_err(|e| Error::BusError(e))?;
 
-        Ok(if is_touched { Some(tp) } else { None })
+        Ok(te)
+    }
+
+    pub fn read_touch_key(&mut self, key_register: u16) -> Result<TouchKey, Error<E>> {
+        let hi_byte: u8 = (key_register >> 8).try_into().unwrap();
+        let lo_byte: u8 = (key_register & 0xFF).try_into().unwrap();
+        let tx_buf: [u8; 2] = [hi_byte, lo_byte];
+
+        // GT911 有 4 个 key
+        let mut rx_buf: [u8; 4] = [0; 4];
+        self.i2c.write_read(self.address, &tx_buf, &mut rx_buf).map_err(|e| Error::BusError(e))?;
+
+        esp_println::println!("  driver: read_touch_key: {:?}", &rx_buf);
+
+        // ESP32-S3-Box-3 只使用了一个 touch key，故只读取 rx_buf[0] 内容
+        let key0: u8 = rx_buf[0];
+        Ok(TouchKey { id: 0, pressed: if key0 == 0 { false } else { true } })
     }
 
     pub fn read_touch_point(&mut self, point_register: u16) -> Result<TouchPoint, Error<E>> {
@@ -226,8 +269,6 @@ where
         let mut x: u16 = rx_buf[1] as u16 + ((rx_buf[2] as u16) << 8);
         let mut y: u16 = rx_buf[3] as u16 + ((rx_buf[4] as u16) << 8);
         let size: u16 = rx_buf[5] as u16 + ((rx_buf[6] as u16) << 8);
-
-        //println!("========== x = {:?}    y = {:?} ==========", x, y);
 
         match self.orientation {
             Orientation::Landscape => {
@@ -248,6 +289,8 @@ where
                 y = temp;
             }
         }
+
+        esp_println::println!("  driver: read_touch_point: x/y/id: {}/{}/{}", x, y, id);
 
         Ok(TouchPoint { id, x, y, size })
     }
